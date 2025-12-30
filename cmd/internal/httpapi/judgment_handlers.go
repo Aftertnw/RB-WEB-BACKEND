@@ -17,7 +17,7 @@ type Judgment struct {
 	CaseNo       *string   `json:"case_no"`
 	Court        *string   `json:"court"`
 	JudgmentDate *string   `json:"judgment_date"` // YYYY-MM-DD
-	Parties      *string   `json:"parties"`
+	Parties      *string   `json:"	parties"`
 	Facts        *string   `json:"facts"`
 	Issues       *string   `json:"issues"`
 	Holding      *string   `json:"holding"`
@@ -54,12 +54,12 @@ func registerJudgmentRoutes(api *gin.RouterGroup, pool *pgxpool.Pool) {
 	api.GET("/judgments", func(c *gin.Context) { listJudgments(c, pool) })
 	api.GET("/judgments/:id", func(c *gin.Context) { getJudgment(c, pool) })
 
-	// admin write
-	admin := api.Group("")
-	admin.Use(AuthMiddleware(), RequireRole("admin"))
-	admin.POST("/judgments", func(c *gin.Context) { createJudgment(c, pool) })
-	admin.PUT("/judgments/:id", func(c *gin.Context) { updateJudgment(c, pool) })
-	admin.DELETE("/judgments/:id", func(c *gin.Context) { deleteJudgment(c, pool) })
+	// ✅ auth write (user ก็ทำ CRUD ได้ แค่ต้อง login)
+	auth := api.Group("")
+	auth.Use(AuthMiddleware())
+	auth.POST("/judgments", func(c *gin.Context) { createJudgment(c, pool) })
+	auth.PUT("/judgments/:id", func(c *gin.Context) { updateJudgment(c, pool) })
+	auth.DELETE("/judgments/:id", func(c *gin.Context) { deleteJudgment(c, pool) })
 }
 
 func listJudgments(c *gin.Context, pool *pgxpool.Pool) {
