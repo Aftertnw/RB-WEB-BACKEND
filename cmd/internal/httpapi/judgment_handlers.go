@@ -50,11 +50,16 @@ type PaginatedResponse struct {
 }
 
 func registerJudgmentRoutes(api *gin.RouterGroup, pool *pgxpool.Pool) {
+	// public read
 	api.GET("/judgments", func(c *gin.Context) { listJudgments(c, pool) })
 	api.GET("/judgments/:id", func(c *gin.Context) { getJudgment(c, pool) })
-	api.POST("/judgments", func(c *gin.Context) { createJudgment(c, pool) })
-	api.PUT("/judgments/:id", func(c *gin.Context) { updateJudgment(c, pool) })
-	api.DELETE("/judgments/:id", func(c *gin.Context) { deleteJudgment(c, pool) })
+
+	// admin write
+	admin := api.Group("")
+	admin.Use(AuthMiddleware(), RequireRole("admin"))
+	admin.POST("/judgments", func(c *gin.Context) { createJudgment(c, pool) })
+	admin.PUT("/judgments/:id", func(c *gin.Context) { updateJudgment(c, pool) })
+	admin.DELETE("/judgments/:id", func(c *gin.Context) { deleteJudgment(c, pool) })
 }
 
 func listJudgments(c *gin.Context, pool *pgxpool.Pool) {

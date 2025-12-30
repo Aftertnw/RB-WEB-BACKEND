@@ -14,7 +14,7 @@ func NewRouter(pool *pgxpool.Pool) *gin.Engine {
 	// CORS + utf-8
 	r.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
 		c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 
@@ -30,7 +30,12 @@ func NewRouter(pool *pgxpool.Pool) *gin.Engine {
 	// Auth routes (public)
 	registerAuthRoutes(api, pool)
 
-	// Judgment routes
+	// ✅ Admin-only routes
+	admin := api.Group("")
+	admin.Use(AuthMiddleware(), RequireRole("admin"))
+	registerUserAdminRoutes(admin, pool)
+
+	// Judgments (read public, write admin) - ตามข้อ 5
 	registerJudgmentRoutes(api, pool)
 
 	r.GET("/api/health", func(c *gin.Context) {

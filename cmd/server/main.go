@@ -1,13 +1,10 @@
 package main
 
 import (
-	"fmt"
 	"judgment-notes/cmd/internal/db"
 	"judgment-notes/cmd/internal/httpapi"
 	"log"
 	"os"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
@@ -32,8 +29,4 @@ func main() {
 	if err := r.Run(":" + port); err != nil {
 		log.Fatal(err)
 	}
-
-	password := "admin123"
-	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	fmt.Println(string(hash))
 }

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -125,12 +126,13 @@ func register(c *gin.Context, pool *pgxpool.Pool) {
 	// Insert user
 	var user User
 	err = pool.QueryRow(c, `
-		INSERT INTO users (email, password_hash, name)
-		VALUES ($1, $2, $3)
-		RETURNING id, email, name, role, avatar_url, created_at
-	`, email, string(hashedPassword), name).Scan(
+    INSERT INTO users (email, password_hash, name, role)
+    VALUES ($1, $2, $3, 'user')
+    RETURNING id, email, name, role, avatar_url, created_at
+`, email, string(hashedPassword), name).Scan(
 		&user.ID, &user.Email, &user.Name, &user.Role, &user.AvatarURL, &user.CreatedAt,
 	)
+
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") {
 			c.JSON(409, gin.H{"error": "email already exists"})
@@ -191,11 +193,20 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		tokenString = strings.TrimSpace(tokenString)
+		if tokenString == "" {
+			c.JSON(401, gin.H{"error": "invalid token"})
+			c.Abort()
+			return
+		}
 
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			// ✅ กันโจมตีเปลี่ยน algorithm
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, jwt.ErrSignatureInvalid
+			}
 			return jwtSecret, nil
 		})
-
 		if err != nil || !token.Valid {
 			c.JSON(401, gin.H{"error": "invalid token"})
 			c.Abort()
@@ -209,9 +220,29 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		c.Set("userID", claims["sub"])
-		c.Set("userEmail", claims["email"])
-		c.Set("userRole", claims["role"])
+		// ✅ แปลงเป็น string ให้ชัวร์
+		userID := ""
+		if v, ok := claims["sub"]; ok {
+			userID = strings.TrimSpace(fmt.Sprint(v))
+		}
+		userEmail := ""
+		if v, ok := claims["email"]; ok {
+			userEmail = strings.TrimSpace(fmt.Sprint(v))
+		}
+		userRole := ""
+		if v, ok := claims["role"]; ok {
+			userRole = strings.TrimSpace(fmt.Sprint(v))
+		}
+
+		if userID == "" {
+			c.JSON(401, gin.H{"error": "invalid token (no sub)"})
+			c.Abort()
+			return
+		}
+
+		c.Set("userID", userID)
+		c.Set("userEmail", userEmail)
+		c.Set("userRole", userRole)
 		c.Next()
 	}
 }
