@@ -13,6 +13,9 @@ func main() {
 		log.Fatal("DATABASE_URL is required")
 	}
 
+	// ✅ run migrations before creating DB pool / starting server
+	db.RunMigrations(dsn)
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
