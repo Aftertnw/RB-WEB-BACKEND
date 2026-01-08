@@ -17,7 +17,7 @@ type Judgment struct {
 	CaseNo       *string   `json:"case_no"`
 	Court        *string   `json:"court"`
 	JudgmentDate *string   `json:"judgment_date"` // YYYY-MM-DD
-	Parties      *string   `json:"	parties"`
+	Parties      *string   `json:"parties"`
 	Facts        *string   `json:"facts"`
 	Issues       *string   `json:"issues"`
 	Holding      *string   `json:"holding"`
