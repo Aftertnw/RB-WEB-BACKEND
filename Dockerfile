@@ -11,7 +11,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o app ./cmd/server
 
 FROM alpine:3.20
 WORKDIR /app
+
 COPY --from=build /app/app ./app
+COPY --from=build /app/migrations ./migrations
 
 EXPOSE 8080
 ENV PORT=8080
