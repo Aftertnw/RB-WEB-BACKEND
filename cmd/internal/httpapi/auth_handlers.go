@@ -88,7 +88,7 @@ func login(c *gin.Context, pool *pgxpool.Pool) {
 		"email": user.Email,
 		"name":  user.Name,
 		"role":  user.Role,
-		"exp":   time.Now().Add(24 * 7 * time.Hour).Unix(), // 7 days
+		"exp":   time.Now().Add(15 * time.Minute).Unix(), // 15 minutes
 	})
 
 	tokenString, err := token.SignedString(jwtSecret)
