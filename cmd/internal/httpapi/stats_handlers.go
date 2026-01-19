@@ -24,12 +24,14 @@ type DashboardStats struct {
 	ActiveUsers    *int64 `json:"active_users,omitempty"`
 	PendingUsers   *int64 `json:"pending_users,omitempty"`
 
+	PendingJudgments *int64 `json:"pending_judgments,omitempty"`
+
 	YearlyStats []YearlyStat `json:"yearly_stats"`
 	CourtStats  []CourtStat  `json:"court_stats"`
 }
 
 func registerStatsRoutes(api *gin.RouterGroup, pool *pgxpool.Pool) {
-	api.GET("/dashboard/stats", AuthMiddleware(), func(c *gin.Context) { getDashboardStats(c, pool) })
+	api.GET("/dashboard/stats", AuthMiddleware(pool), func(c *gin.Context) { getDashboardStats(c, pool) })
 }
 
 func getDashboardStats(c *gin.Context, pool *pgxpool.Pool) {
@@ -44,7 +46,7 @@ func getDashboardStats(c *gin.Context, pool *pgxpool.Pool) {
 	// Helper to build queries
 	var filterClause string
 	var args []any
-	if role != "admin" {
+	if role != "admin" && role != "owner" {
 		filterClause = " AND created_by = $1"
 		args = append(args, userID)
 	}
@@ -118,7 +120,7 @@ func getDashboardStats(c *gin.Context, pool *pgxpool.Pool) {
 	}
 
 	// 4. Admin Stats
-	if role == "admin" {
+	if role == "admin" || role == "owner" {
 		var total, active, pending int64
 		// Total
 		if err := pool.QueryRow(c, "SELECT COUNT(*) FROM users").Scan(&total); err == nil {
@@ -128,9 +130,14 @@ func getDashboardStats(c *gin.Context, pool *pgxpool.Pool) {
 		if err := pool.QueryRow(c, "SELECT COUNT(*) FROM users WHERE is_approved = true").Scan(&active); err == nil {
 			stats.ActiveUsers = &active
 		}
-		// Pending
+		// Pending Users
 		if err := pool.QueryRow(c, "SELECT COUNT(*) FROM users WHERE is_approved = false").Scan(&pending); err == nil {
 			stats.PendingUsers = &pending
+		}
+		// Pending Judgments (pending + request_delete)
+		var pendingJudgments int64
+		if err := pool.QueryRow(c, "SELECT COUNT(*) FROM judgments WHERE status IN ('pending', 'request_delete')").Scan(&pendingJudgments); err == nil {
+			stats.PendingJudgments = &pendingJudgments
 		}
 	}
 

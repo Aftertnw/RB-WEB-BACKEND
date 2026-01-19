@@ -48,7 +48,7 @@ func normalizeRole(s string) string {
 }
 func isValidRole(r string) bool {
 	r = normalizeRole(r)
-	return r == "admin" || r == "user"
+	return r == "admin" || r == "user" || r == "owner"
 }
 
 func adminListUsers(c *gin.Context, pool *pgxpool.Pool) {
@@ -153,6 +153,36 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 	}
 
 	selfID := c.GetString("userID")
+	selfRole := c.GetString("userRole")
+
+	// Check protection:
+	// 1. Admin cannot edit Owner.
+	// 2. Admin cannot edit other Admins.
+	if selfRole != "owner" {
+		var targetRole string
+		var targetEmail string
+		err := pool.QueryRow(c, "SELECT role, email FROM users WHERE id=$1", id).Scan(&targetRole, &targetEmail)
+		if err != nil {
+			c.JSON(404, gin.H{"error": "user not found"})
+			return
+		}
+
+		// ✅ Protection: Super Owner (thanawuth.rod@gmail.com) cannot be edited by anyone else
+		if targetEmail == "thanawuth.rod@gmail.com" && id != selfID {
+			c.JSON(403, gin.H{"error": "permission denied: cannot edit super owner"})
+			return
+		}
+
+		if targetRole == "owner" {
+			c.JSON(403, gin.H{"error": "permission denied: cannot edit owner"})
+			return
+		}
+		// If I am admin, and target is admin, and it's NOT me -> Deny
+		if selfRole == "admin" && targetRole == "admin" && id != selfID {
+			c.JSON(403, gin.H{"error": "permission denied: cannot manage other admins"})
+			return
+		}
+	}
 
 	setParts := []string{}
 	args := []any{}
@@ -189,7 +219,7 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 			c.JSON(400, gin.H{"error": "invalid role"})
 			return
 		}
-		if id == selfID && role != "admin" {
+		if id == selfID && role != "admin" && role != "owner" {
 			c.JSON(400, gin.H{"error": "cannot downgrade your own role"})
 			return
 		}
@@ -261,6 +291,35 @@ func adminDeleteUser(c *gin.Context, pool *pgxpool.Pool) {
 	if id == selfID {
 		c.JSON(400, gin.H{"error": "cannot delete your own account"})
 		return
+	}
+
+	selfRole := c.GetString("userRole")
+
+	// Fetch target info first (needed for checking email even if owner)
+	var targetRole string
+	var targetEmail string
+	err := pool.QueryRow(c, "SELECT role, email FROM users WHERE id=$1", id).Scan(&targetRole, &targetEmail)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "user not found"})
+		return
+	}
+
+	// ✅ Protection: Super Owner (thanawuth.rod@gmail.com) cannot be deleted by anyone
+	if targetEmail == "thanawuth.rod@gmail.com" {
+		c.JSON(403, gin.H{"error": "permission denied: cannot delete super owner"})
+		return
+	}
+
+	if selfRole != "owner" {
+		if targetRole == "owner" {
+			c.JSON(403, gin.H{"error": "permission denied: cannot delete owner"})
+			return
+		}
+		// If I am admin, and target is admin -> Deny (already checked id!=selfID above)
+		if selfRole == "admin" && targetRole == "admin" {
+			c.JSON(403, gin.H{"error": "permission denied: cannot delete other admins"})
+			return
+		}
 	}
 
 	ct, err := pool.Exec(c, `DELETE FROM users WHERE id=$1`, id)

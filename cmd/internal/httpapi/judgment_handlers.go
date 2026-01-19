@@ -41,6 +41,7 @@ type createUpdatePayload struct {
 	Holding      *string  `json:"holding"`
 	Notes        *string  `json:"notes"`
 	Tags         []string `json:"tags"`
+	Status       *string  `json:"status"` // Admin only
 }
 
 // Paginated response
@@ -55,7 +56,7 @@ type PaginatedResponse struct {
 func registerJudgmentRoutes(api *gin.RouterGroup, pool *pgxpool.Pool) {
 	// ✅ auth required for all judgment access
 	auth := api.Group("")
-	auth.Use(AuthMiddleware()) // Middleware populates userRole and userID
+	auth.Use(AuthMiddleware(pool)) // Middleware populates userRole and userID
 
 	auth.GET("/judgments", func(c *gin.Context) { listJudgments(c, pool) })
 	auth.GET("/judgments/:id", func(c *gin.Context) { getJudgment(c, pool) })
@@ -104,7 +105,7 @@ func listJudgments(c *gin.Context, pool *pgxpool.Pool) {
 	// Safe default: If not admin, and we have a userID, show own.
 	// If not admin and NO userID (not logged in), maybe show nothing or approved?
 	// Given the context of "Military Officer", they are users.
-	if role != "admin" {
+	if role != "admin" && role != "owner" {
 		if userID != "" {
 			conds = append(conds, "j.created_by = $"+itoa(argN))
 			args = append(args, userID)
@@ -135,9 +136,13 @@ func listJudgments(c *gin.Context, pool *pgxpool.Pool) {
 	}
 
 	if status != "" {
-		conds = append(conds, "j.status = $"+itoa(argN))
-		args = append(args, status)
-		argN++
+		if status == "pending_action" {
+			conds = append(conds, "j.status IN ('pending', 'request_delete')")
+		} else {
+			conds = append(conds, "j.status = $"+itoa(argN))
+			args = append(args, status)
+			argN++
+		}
 	}
 
 	where := strings.Join(conds, " AND ")
@@ -219,7 +224,7 @@ WHERE j.id=$1`
 	args := []any{id}
 
 	// Security: If not admin, MUST be creator
-	if role != "admin" && userID != "" {
+	if role != "admin" && role != "owner" && userID != "" {
 		q += ` AND j.created_by = $2`
 		args = append(args, userID)
 	}
@@ -257,45 +262,58 @@ func createJudgment(c *gin.Context, pool *pgxpool.Pool) {
 		// Actually AuthMiddleware sets "userEmail" and "userID". Let's stick to context.
 	}
 
+	// Logic:
+	// If Admin: Auto 'approved', No notification.
+	// If User: 'pending', Notify Admin.
+
+	role := c.GetString("userRole")
+	status := "pending"
+	if role == "admin" || role == "owner" {
+		status = "approved"
+	}
+
 	q := `
 INSERT INTO judgments (doc_no, title, case_no, court, judgment_date, parties, facts, issues, holding, notes, tags, status, created_by)
-VALUES (next_judgment_doc_no(), $1,$2,$3,$4::date,$5,$6,$7,$8,$9,$10, 'pending', $11)
+VALUES (next_judgment_doc_no(), $1,$2,$3,$4::date,$5,$6,$7,$8,$9,$10, $11, $12)
 RETURNING id, doc_no`
 
 	var id string
 	var docNo string
 	err := pool.QueryRow(c, q,
 		in.Title, in.CaseNo, in.Court, in.JudgmentDate,
-		in.Parties, in.Facts, in.Issues, in.Holding, in.Notes, in.Tags, userID,
+		in.Parties, in.Facts, in.Issues, in.Holding, in.Notes, in.Tags, status, userID,
 	).Scan(&id, &docNo)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Notify Admins Only
-	go func() {
-		ctx := context.Background()
-		// Get all admins
-		rows, _ := pool.Query(ctx, "SELECT id FROM users WHERE role = 'admin'")
-		defer rows.Close()
+	// Notify Admins Only if created by non-admin
+	if role != "admin" && role != "owner" {
+		go func() {
+			ctx := context.Background()
+			// Get all admins
+			rows, _ := pool.Query(ctx, "SELECT id FROM users WHERE role IN ('admin', 'owner')")
+			defer rows.Close()
 
-		link := "/judgments/approve" // Direct to approval page
-		msg := "New judgment recorded: " + in.Title + " (Pending Approval)"
+			link := "/judgments/approve" // Direct to approval page
+			msg := "New judgment recorded: " + in.Title + " (Pending Approval)"
 
-		for rows.Next() {
-			var adminID string
-			if err := rows.Scan(&adminID); err == nil {
-				createNotification(ctx, pool, adminID, "info", "New Judgment Pending", msg, &link)
+			for rows.Next() {
+				var adminID string
+				if err := rows.Scan(&adminID); err == nil {
+					createNotification(ctx, pool, adminID, "info", "New Judgment Pending", msg, &link)
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	c.JSON(201, gin.H{"id": id, "doc_no": docNo})
 }
 
 func updateJudgment(c *gin.Context, pool *pgxpool.Pool) {
 	id := c.Param("id")
+	role := c.GetString("userRole")
 
 	var in createUpdatePayload
 	if err := c.ShouldBindJSON(&in); err != nil || strings.TrimSpace(in.Title) == "" {
@@ -303,16 +321,46 @@ func updateJudgment(c *gin.Context, pool *pgxpool.Pool) {
 		return
 	}
 
+	// Logic:
+	// If Admin:
+	//   - If in.Status provided, use it.
+	//   - Else, keep existing status (don't force pending).
+	// If User (Non-Admin):
+	//   - Force status = 'pending'.
+
+	var statusExpr string
+	var args []any
+
+	args = append(args,
+		in.Title, in.CaseNo, in.Court, in.JudgmentDate,
+		in.Parties, in.Facts, in.Issues, in.Holding, in.Notes, in.Tags,
+	)
+
+	// Determine status update
+	if role == "admin" || role == "owner" {
+		if in.Status != nil && *in.Status != "" {
+			// Admin explicitly setting status
+			statusExpr = "$" + strconv.Itoa(len(args)+1)
+			args = append(args, *in.Status)
+		} else {
+			// Admin update without explicit status -> Auto Approve (no need specific approval)
+			statusExpr = "'approved'"
+		}
+	} else {
+		// User -> Force Pending
+		statusExpr = "'pending'"
+	}
+
+	args = append(args, id) // ID is last arg
+	idArgIndex := len(args)
+
 	q := `
 UPDATE judgments
 SET title=$1, case_no=$2, court=$3, judgment_date=$4::date, parties=$5, facts=$6,
-    issues=$7, holding=$8, notes=$9, tags=$10, status='pending', updated_at=now()
-WHERE id=$11`
+    issues=$7, holding=$8, notes=$9, tags=$10, status=` + statusExpr + `, updated_at=now()
+WHERE id=$` + strconv.Itoa(idArgIndex)
 
-	ct, err := pool.Exec(c, q,
-		in.Title, in.CaseNo, in.Court, in.JudgmentDate,
-		in.Parties, in.Facts, in.Issues, in.Holding, in.Notes, in.Tags, id,
-	)
+	ct, err := pool.Exec(c, q, args...)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -322,37 +370,84 @@ WHERE id=$11`
 		return
 	}
 
-	// Notify Admins about the update
-	go func() {
-		ctx := context.Background()
-		rows, _ := pool.Query(ctx, "SELECT id FROM users WHERE role = 'admin'")
-		defer rows.Close()
+	// Notify Admins about the update IF user triggered it (became pending)
+	if role != "admin" && role != "owner" {
+		go func() {
+			ctx := context.Background()
+			rows, _ := pool.Query(ctx, "SELECT id FROM users WHERE role IN ('admin', 'owner')")
+			defer rows.Close()
 
-		link := "/judgments/approve"
-		msg := "Judgment updated and pending re-approval: " + in.Title
+			link := "/judgments/approve"
+			msg := "Judgment updated and pending re-approval: " + in.Title
 
-		for rows.Next() {
-			var adminID string
-			if err := rows.Scan(&adminID); err == nil {
-				createNotification(ctx, pool, adminID, "info", "Judgment Updated", msg, &link)
+			for rows.Next() {
+				var adminID string
+				if err := rows.Scan(&adminID); err == nil {
+					createNotification(ctx, pool, adminID, "info", "Judgment Updated", msg, &link)
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	c.Status(204)
 }
 
 func deleteJudgment(c *gin.Context, pool *pgxpool.Pool) {
 	id := c.Param("id")
+	role := c.GetString("userRole")
 
-	ct, err := pool.Exec(c, `DELETE FROM judgments WHERE id=$1`, id)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-	if ct.RowsAffected() == 0 {
-		c.JSON(404, gin.H{"error": "not found"})
-		return
+	if role == "admin" || role == "owner" {
+		// Admin -> Hard Delete immediately
+		ct, err := pool.Exec(c, `DELETE FROM judgments WHERE id=$1`, id)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		if ct.RowsAffected() == 0 {
+			c.JSON(404, gin.H{"error": "not found"})
+			return
+		}
+	} else {
+		// User -> Request Delete
+		ct, err := pool.Exec(c, `UPDATE judgments SET status='request_delete', updated_at=now() WHERE id=$1`, id)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		if ct.RowsAffected() == 0 {
+			c.JSON(404, gin.H{"error": "not found"})
+			return
+		}
+
+		// Notify Admins
+		go func() {
+			ctx := context.Background()
+			rows, _ := pool.Query(ctx, "SELECT id, title FROM judgments WHERE id=$1", id)
+			var title string
+			if rows.Next() { // Should find it unless race condition
+				rows.Scan(nil, &title) // check types? Wait, select id, title. Scan needs 2 args.
+				// Error in previous Query: Query returns rows.
+				// Correct approach:
+			}
+			rows.Close()
+
+			// Get Title for notification (optional, query again)
+			var jTitle string
+			_ = pool.QueryRow(ctx, "SELECT title FROM judgments WHERE id=$1", id).Scan(&jTitle)
+
+			adminRows, _ := pool.Query(ctx, "SELECT id FROM users WHERE role IN ('admin', 'owner')")
+			defer adminRows.Close()
+
+			link := "/judgments/approve"
+			msg := "Deletion requested for: " + jTitle
+
+			for adminRows.Next() {
+				var adminID string
+				if err := adminRows.Scan(&adminID); err == nil {
+					createNotification(ctx, pool, adminID, "alert", "Delete Requested", msg, &link)
+				}
+			}
+		}()
 	}
 
 	c.Status(204)
@@ -361,24 +456,42 @@ func deleteJudgment(c *gin.Context, pool *pgxpool.Pool) {
 func approveJudgment(c *gin.Context, pool *pgxpool.Pool) {
 	// Ensure only admin
 	role := c.GetString("userRole")
-	if role != "admin" {
+	if role != "admin" && role != "owner" {
 		c.JSON(403, gin.H{"error": "admin required"})
 		return
 	}
 
 	id := c.Param("id")
 
+	// Check current status
+	var currentStatus string
+	err := pool.QueryRow(c, "SELECT status FROM judgments WHERE id=$1", id).Scan(&currentStatus)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "not found"})
+		return
+	}
+
+	if currentStatus == "request_delete" {
+		// Approve Delete -> Delete!
+		_, err := pool.Exec(c, "DELETE FROM judgments WHERE id=$1", id)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"id": id, "status": "deleted"})
+		return
+	}
+
+	// Normal Approve
 	// Returns created_by so we can notify them
 	q := `UPDATE judgments SET status='approved', updated_at=now() WHERE id=$1 RETURNING created_by`
 	var createdBy *string
-	err := pool.QueryRow(c, q, id).Scan(&createdBy)
+	err = pool.QueryRow(c, q, id).Scan(&createdBy)
 
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	// No rows check handled by Scan error usually, but distinct not found vs other error is better.
-	// However QueryRow returns ErrNoRows if no rows.
 
 	// Notify Creator
 	if createdBy != nil {
@@ -395,15 +508,37 @@ func approveJudgment(c *gin.Context, pool *pgxpool.Pool) {
 func rejectJudgment(c *gin.Context, pool *pgxpool.Pool) {
 	// Ensure only admin
 	role := c.GetString("userRole")
-	if role != "admin" {
+	if role != "admin" && role != "owner" {
 		c.JSON(403, gin.H{"error": "admin required"})
 		return
 	}
 
 	id := c.Param("id")
+
+	// Check current status
+	var currentStatus string
+	err := pool.QueryRow(c, "SELECT status FROM judgments WHERE id=$1", id).Scan(&currentStatus)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "not found"})
+		return
+	}
+
+	if currentStatus == "request_delete" {
+		// Reject Delete -> Revert to Approved
+		// Or should it go back to what it was? usually 'approved' before delete request?
+		// Assuming it was safe to show before, so yes.
+		_, err := pool.Exec(c, "UPDATE judgments SET status='approved', updated_at=now() WHERE id=$1", id)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"id": id, "status": "approved"})
+		return
+	}
+
 	q := `UPDATE judgments SET status='rejected', updated_at=now() WHERE id=$1 RETURNING created_by`
 	var createdBy *string
-	err := pool.QueryRow(c, q, id).Scan(&createdBy)
+	err = pool.QueryRow(c, q, id).Scan(&createdBy)
 
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})

@@ -46,7 +46,7 @@ func getEnv(key, fallback string) string {
 func registerAuthRoutes(api *gin.RouterGroup, pool *pgxpool.Pool) {
 	api.POST("/auth/login", func(c *gin.Context) { login(c, pool) })
 	api.POST("/auth/register", func(c *gin.Context) { register(c, pool) })
-	api.GET("/auth/me", AuthMiddleware(), func(c *gin.Context) { getMe(c, pool) })
+	api.GET("/auth/me", AuthMiddleware(pool), func(c *gin.Context) { getMe(c, pool) })
 	api.POST("/auth/logout", func(c *gin.Context) { logout(c) })
 }
 
@@ -154,7 +154,7 @@ func register(c *gin.Context, pool *pgxpool.Pool) {
 	// ✅ Notify Admins
 	go func() {
 		ctx := context.Background()
-		rows, _ := pool.Query(ctx, "SELECT id FROM users WHERE role = 'admin'")
+		rows, _ := pool.Query(ctx, "SELECT id FROM users WHERE role IN ('admin', 'owner')")
 		defer rows.Close()
 		for rows.Next() {
 			var adminID string
@@ -195,7 +195,7 @@ func logout(c *gin.Context) {
 }
 
 // Auth Middleware
-func AuthMiddleware() gin.HandlerFunc {
+func AuthMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -251,6 +251,17 @@ func AuthMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+
+		// ✅ Refresh Role from DB (Single Source of Truth)
+		var dbRole string
+		err = pool.QueryRow(c, "SELECT role FROM users WHERE id=$1", userID).Scan(&dbRole)
+		if err != nil {
+			// User not found (deleted?)
+			c.JSON(401, gin.H{"error": "user verification failed"})
+			c.Abort()
+			return
+		}
+		userRole = dbRole
 
 		c.Set("userID", userID)
 		c.Set("userEmail", userEmail)

@@ -32,13 +32,13 @@ func NewRouter(pool *pgxpool.Pool) *gin.Engine {
 
 	// Protected routes
 	protected := api.Group("")
-	protected.Use(AuthMiddleware())
+	protected.Use(AuthMiddleware(pool))
 	registerNotificationRoutes(protected, pool) // ✅ Notifications
 	registerStatsRoutes(protected, pool)        // ✅ Dashboard Stats
 
 	// ✅ Admin-only routes (จัดการ user)
 	admin := api.Group("")
-	admin.Use(AuthMiddleware(), RequireRole("admin"))
+	admin.Use(AuthMiddleware(pool), RequireRole("admin", "owner"))
 	registerUserAdminRoutes(admin, pool)
 
 	// ✅ Judgments: user ก็ทำ CRUD ได้ แค่ต้อง login
