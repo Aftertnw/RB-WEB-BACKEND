@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -218,6 +219,14 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 		setParts = append(setParts, "is_approved=$"+itoa(argN))
 		args = append(args, *in.IsApproved)
 		argN++
+
+		// Notify if approved
+		if *in.IsApproved {
+			go func() {
+				// We need to fetch ID if not known? We have ID in params.
+				createNotification(context.Background(), pool, id, "success", "Account Approved", "Your account has been approved. You can now log in.", nil)
+			}()
+		}
 	}
 
 	if len(setParts) == 0 {

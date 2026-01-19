@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -13,10 +14,10 @@ import (
 )
 
 type User struct {
-	ID        string    `json:"id"`
-	Email     string    `json:"email"`
-	Name      string    `json:"name"`
-	Role      string    `json:"role"`
+	ID         string    `json:"id"`
+	Email      string    `json:"email"`
+	Name       string    `json:"name"`
+	Role       string    `json:"role"`
 	AvatarURL  *string   `json:"avatar_url"`
 	IsApproved bool      `json:"is_approved"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -149,6 +150,20 @@ func register(c *gin.Context, pool *pgxpool.Pool) {
 	}
 
 	// NO TOKEN for pending users
+
+	// ✅ Notify Admins
+	go func() {
+		ctx := context.Background()
+		rows, _ := pool.Query(ctx, "SELECT id FROM users WHERE role = 'admin'")
+		defer rows.Close()
+		for rows.Next() {
+			var adminID string
+			if err := rows.Scan(&adminID); err == nil {
+				createNotification(ctx, pool, adminID, "info", "New User Registered", "User "+name+" ("+email+") has registered and is waiting for approval.", nil)
+			}
+		}
+	}()
+
 	c.JSON(201, gin.H{
 		"message": "registration successful, please wait for admin approval",
 		"user":    user,

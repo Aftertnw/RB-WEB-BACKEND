@@ -30,6 +30,11 @@ func NewRouter(pool *pgxpool.Pool) *gin.Engine {
 	// Auth routes (public)
 	registerAuthRoutes(api, pool)
 
+	// Protected routes
+	protected := api.Group("")
+	protected.Use(AuthMiddleware())
+	registerNotificationRoutes(protected, pool) // ✅ Notifications
+
 	// ✅ Admin-only routes (จัดการ user)
 	admin := api.Group("")
 	admin.Use(AuthMiddleware(), RequireRole("admin"))
