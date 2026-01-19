@@ -34,14 +34,24 @@ func registerStatsRoutes(api *gin.RouterGroup, pool *pgxpool.Pool) {
 
 func getDashboardStats(c *gin.Context, pool *pgxpool.Pool) {
 	role := c.GetString("userRole")
+	userID := c.GetString("userID")
 
 	stats := DashboardStats{
 		YearlyStats: []YearlyStat{}, // Ensure non-null for JSON
 		CourtStats:  []CourtStat{},
 	}
 
+	// Helper to build queries
+	var filterClause string
+	var args []any
+	if role != "admin" {
+		filterClause = " AND created_by = $1"
+		args = append(args, userID)
+	}
+
 	// 1. Count Judgments
-	err := pool.QueryRow(c, "SELECT COUNT(*) FROM judgments").Scan(&stats.TotalJudgments)
+	countQ := "SELECT COUNT(*) FROM judgments WHERE 1=1" + filterClause
+	err := pool.QueryRow(c, countQ, args...).Scan(&stats.TotalJudgments)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "failed to count judgments"})
 		return
@@ -59,12 +69,14 @@ func getDashboardStats(c *gin.Context, pool *pgxpool.Pool) {
 	}
 
 	// Query actual data
-	rows, err := pool.Query(c, `
+	trendQ := `
 		SELECT to_char(judgment_date, 'YYYY') as year, COUNT(*)
 		FROM judgments
 		WHERE judgment_date >= (CURRENT_DATE - INTERVAL '5 years')
+	` + filterClause + `
 		GROUP BY year
-	`)
+	`
+	rows, err := pool.Query(c, trendQ, args...)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -88,11 +100,13 @@ func getDashboardStats(c *gin.Context, pool *pgxpool.Pool) {
 
 	// 3. Offenders (Parties) Distribution
 	// Using 'parties' column, grouped by exact string match
-	rows2, err := pool.Query(c, `
+	partiesQ := `
 		SELECT COALESCE(parties, 'Unknown'), COUNT(*)
 		FROM judgments
+		WHERE 1=1 ` + filterClause + `
 		GROUP BY parties ORDER BY count DESC LIMIT 5
-	`)
+	`
+	rows2, err := pool.Query(c, partiesQ, args...)
 	if err == nil {
 		defer rows2.Close()
 		for rows2.Next() {

@@ -23,6 +23,7 @@ func registerNotificationRoutes(api *gin.RouterGroup, pool *pgxpool.Pool) {
 	// All routes here should be protected by AuthMiddleware (handled in router.go)
 	api.GET("/notifications", func(c *gin.Context) { listNotifications(c, pool) })
 	api.PATCH("/notifications/:id/read", func(c *gin.Context) { markNotificationRead(c, pool) })
+	api.DELETE("/notifications", func(c *gin.Context) { deleteAllNotifications(c, pool) })
 	api.DELETE("/notifications/:id", func(c *gin.Context) { deleteNotification(c, pool) })
 	api.POST("/notifications/read-all", func(c *gin.Context) { markAllNotificationsRead(c, pool) })
 }
@@ -128,6 +129,22 @@ func deleteNotification(c *gin.Context, pool *pgxpool.Pool) {
 	c.Status(204)
 }
 
+func deleteAllNotifications(c *gin.Context, pool *pgxpool.Pool) {
+	userID := c.MustGet("userID").(string)
+
+	_, err := pool.Exec(c.Request.Context(), `
+		DELETE FROM notifications
+		WHERE user_id = $1
+	`, userID)
+
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to delete all notifications"})
+		return
+	}
+
+	c.Status(204)
+}
+
 // Helper to create notification (internal use)
 func createNotification(ctx context.Context, db *pgxpool.Pool, userID, type_, title, message string, link *string) error {
 	_, err := db.Exec(ctx, `
@@ -135,4 +152,17 @@ func createNotification(ctx context.Context, db *pgxpool.Pool, userID, type_, ti
 		VALUES ($1, $2, $3, $4, $5, FALSE)
 	`, userID, type_, title, message, link)
 	return err
+}
+
+// Helper to broadcast notification to all users or specific roles
+func broadcastNotification(ctx context.Context, db *pgxpool.Pool, type_, title, message string, link *string) {
+	// For this requirement: "Both High-ranking (admin) and Military Officer (user)" means EVERYONE.
+	rows, _ := db.Query(ctx, "SELECT id FROM users")
+	defer rows.Close()
+	for rows.Next() {
+		var uid string
+		if err := rows.Scan(&uid); err == nil {
+			createNotification(ctx, db, uid, type_, title, message, link)
+		}
+	}
 }
