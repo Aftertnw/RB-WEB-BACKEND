@@ -17,19 +17,21 @@ type AdminCreateUserPayload struct {
 }
 
 type AdminUpdateUserPayload struct {
-	Email    *string `json:"email"` // ✅ เพิ่ม
-	Name     *string `json:"name"`
-	Role     *string `json:"role"`     // admin/user
-	Password *string `json:"password"` // optional reset
+	Email      *string `json:"email"` // ✅ เพิ่ม
+	Name       *string `json:"name"`
+	Role       *string `json:"role"`        // admin/user
+	Password   *string `json:"password"`    // optional reset
+	IsApproved *bool   `json:"is_approved"` // ✅ admin can approve
 }
 
 type AdminUser struct {
-	ID        string    `json:"id"`
-	Email     string    `json:"email"`
-	Name      string    `json:"name"`
-	Role      string    `json:"role"`
-	AvatarURL *string   `json:"avatar_url"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	Email      string    `json:"email"`
+	Name       string    `json:"name"`
+	Role       string    `json:"role"`
+	AvatarURL  *string   `json:"avatar_url"`
+	IsApproved bool      `json:"is_approved"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 func registerUserAdminRoutes(api *gin.RouterGroup, pool *pgxpool.Pool) {
@@ -50,7 +52,7 @@ func isValidRole(r string) bool {
 
 func adminListUsers(c *gin.Context, pool *pgxpool.Pool) {
 	rows, err := pool.Query(c, `
-		SELECT id, email, name, role, avatar_url, created_at
+		SELECT id, email, name, role, avatar_url, is_approved, created_at
 		FROM users
 		ORDER BY created_at DESC
 	`)
@@ -63,7 +65,7 @@ func adminListUsers(c *gin.Context, pool *pgxpool.Pool) {
 	out := make([]AdminUser, 0)
 	for rows.Next() {
 		var u AdminUser
-		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.AvatarURL, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.AvatarURL, &u.IsApproved, &u.CreatedAt); err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
@@ -77,10 +79,10 @@ func adminGetUser(c *gin.Context, pool *pgxpool.Pool) {
 
 	var u AdminUser
 	err := pool.QueryRow(c, `
-		SELECT id, email, name, role, avatar_url, created_at
+		SELECT id, email, name, role, avatar_url, is_approved, created_at
 		FROM users
 		WHERE id=$1
-	`, id).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.AvatarURL, &u.CreatedAt)
+	`, id).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.AvatarURL, &u.IsApproved, &u.CreatedAt)
 
 	if err != nil {
 		c.JSON(404, gin.H{"error": "user not found"})
@@ -124,10 +126,10 @@ func adminCreateUser(c *gin.Context, pool *pgxpool.Pool) {
 
 	var u AdminUser
 	err = pool.QueryRow(c, `
-		INSERT INTO users (email, password_hash, name, role)
-		VALUES ($1,$2,$3,$4)
-		RETURNING id, email, name, role, avatar_url, created_at
-	`, email, string(hashed), name, role).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.AvatarURL, &u.CreatedAt)
+		INSERT INTO users (email, password_hash, name, role, is_approved)
+		VALUES ($1,$2,$3,$4, TRUE)
+		RETURNING id, email, name, role, avatar_url, is_approved, created_at
+	`, email, string(hashed), name, role).Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.AvatarURL, &u.IsApproved, &u.CreatedAt)
 
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
@@ -208,6 +210,13 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 		}
 		setParts = append(setParts, "password_hash=$"+itoa(argN))
 		args = append(args, string(hashed))
+		argN++
+	}
+
+	// ✅ is_approved
+	if in.IsApproved != nil {
+		setParts = append(setParts, "is_approved=$"+itoa(argN))
+		args = append(args, *in.IsApproved)
 		argN++
 	}
 

@@ -17,8 +17,9 @@ type User struct {
 	Email     string    `json:"email"`
 	Name      string    `json:"name"`
 	Role      string    `json:"role"`
-	AvatarURL *string   `json:"avatar_url"`
-	CreatedAt time.Time `json:"created_at"`
+	AvatarURL  *string   `json:"avatar_url"`
+	IsApproved bool      `json:"is_approved"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type loginPayload struct {
@@ -59,10 +60,10 @@ func login(c *gin.Context, pool *pgxpool.Pool) {
 	var user User
 	var passwordHash string
 	err := pool.QueryRow(c, `
-		SELECT id, email, name, role, avatar_url, created_at, password_hash 
+		SELECT id, email, name, role, avatar_url, is_approved, created_at, password_hash 
 		FROM users WHERE email = $1
 	`, strings.ToLower(strings.TrimSpace(in.Email))).Scan(
-		&user.ID, &user.Email, &user.Name, &user.Role, &user.AvatarURL, &user.CreatedAt, &passwordHash,
+		&user.ID, &user.Email, &user.Name, &user.Role, &user.AvatarURL, &user.IsApproved, &user.CreatedAt, &passwordHash,
 	)
 	if err != nil {
 		c.JSON(401, gin.H{"error": "invalid email or password"})
@@ -72,6 +73,11 @@ func login(c *gin.Context, pool *pgxpool.Pool) {
 	// Check password
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(in.Password)); err != nil {
 		c.JSON(401, gin.H{"error": "invalid email or password"})
+		return
+	}
+
+	if !user.IsApproved {
+		c.JSON(403, gin.H{"error": "account pending approval"})
 		return
 	}
 
@@ -123,14 +129,14 @@ func register(c *gin.Context, pool *pgxpool.Pool) {
 		return
 	}
 
-	// Insert user
+	// Insert user (is_approved = false by default from migration, but we can be explicit or rely on default)
 	var user User
 	err = pool.QueryRow(c, `
-    INSERT INTO users (email, password_hash, name, role)
-    VALUES ($1, $2, $3, 'user')
-    RETURNING id, email, name, role, avatar_url, created_at
+    INSERT INTO users (email, password_hash, name, role, is_approved)
+    VALUES ($1, $2, $3, 'user', FALSE)
+    RETURNING id, email, name, role, avatar_url, is_approved, created_at
 `, email, string(hashedPassword), name).Scan(
-		&user.ID, &user.Email, &user.Name, &user.Role, &user.AvatarURL, &user.CreatedAt,
+		&user.ID, &user.Email, &user.Name, &user.Role, &user.AvatarURL, &user.IsApproved, &user.CreatedAt,
 	)
 
 	if err != nil {
@@ -142,20 +148,10 @@ func register(c *gin.Context, pool *pgxpool.Pool) {
 		return
 	}
 
-	// Generate JWT
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":   user.ID,
-		"email": user.Email,
-		"name":  user.Name,
-		"role":  user.Role,
-		"exp":   time.Now().Add(24 * 7 * time.Hour).Unix(),
-	})
-
-	tokenString, _ := token.SignedString(jwtSecret)
-
+	// NO TOKEN for pending users
 	c.JSON(201, gin.H{
-		"token": tokenString,
-		"user":  user,
+		"message": "registration successful, please wait for admin approval",
+		"user":    user,
 	})
 }
 
@@ -164,10 +160,10 @@ func getMe(c *gin.Context, pool *pgxpool.Pool) {
 
 	var user User
 	err := pool.QueryRow(c, `
-		SELECT id, email, name, role, avatar_url, created_at 
+		SELECT id, email, name, role, avatar_url, is_approved, created_at 
 		FROM users WHERE id = $1
 	`, userID).Scan(
-		&user.ID, &user.Email, &user.Name, &user.Role, &user.AvatarURL, &user.CreatedAt,
+		&user.ID, &user.Email, &user.Name, &user.Role, &user.AvatarURL, &user.IsApproved, &user.CreatedAt,
 	)
 	if err != nil {
 		c.JSON(404, gin.H{"error": "user not found"})
