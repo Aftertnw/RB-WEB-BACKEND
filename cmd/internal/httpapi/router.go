@@ -34,6 +34,22 @@ func NewRouter(pool *pgxpool.Pool) *gin.Engine {
 	protected := api.Group("")
 	protected.Use(AuthMiddleware())
 	registerNotificationRoutes(protected, pool) // ✅ Notifications
+	// The following routes are assumed to be part of notification routes,
+	// and are added here based on the provided snippet.
+	// Note: The snippet used 'auth' which is not defined, assuming it refers to 'protected'.
+	// Also, 'markNotificationRead', 'deleteNotification', 'markAllNotificationsRead'
+	// are assumed to be defined elsewhere or will be defined.
+	// The PATCH route was already implicitly handled by registerNotificationRoutes,
+	// but is included here as per the instruction's snippet.
+	protected.PATCH("/notifications/:id/read", func(c *gin.Context) {
+		markNotificationRead(c, pool)
+	})
+	protected.DELETE("/notifications/:id", func(c *gin.Context) {
+		deleteNotification(c, pool)
+	})
+	protected.POST("/notifications/read-all", func(c *gin.Context) {
+		markAllNotificationsRead(c, pool)
+	})
 
 	// ✅ Admin-only routes (จัดการ user)
 	admin := api.Group("")

@@ -159,7 +159,8 @@ func register(c *gin.Context, pool *pgxpool.Pool) {
 		for rows.Next() {
 			var adminID string
 			if err := rows.Scan(&adminID); err == nil {
-				createNotification(ctx, pool, adminID, "info", "New User Registered", "User "+name+" ("+email+") has registered and is waiting for approval.", nil)
+				link := "/users?tab=pending"
+				createNotification(ctx, pool, adminID, "info", "New User Registered", "User "+name+" ("+email+") has registered and is waiting for approval.", &link)
 			}
 		}
 	}()

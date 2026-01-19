@@ -27,50 +27,66 @@ func registerNotificationRoutes(api *gin.RouterGroup, pool *pgxpool.Pool) {
 }
 
 func listNotifications(c *gin.Context, pool *pgxpool.Pool) {
-	userID := c.GetString("userID")
+	userID := c.MustGet("userID").(string)
 
-	rows, err := pool.Query(c, `
+	rows, err := pool.Query(context.Background(), `
 		SELECT id, user_id, type, title, message, is_read, link, created_at
 		FROM notifications
 		WHERE user_id = $1
 		ORDER BY created_at DESC
-		LIMIT 50
+		LIMIT 20
 	`, userID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(500, gin.H{"error": "failed to list notifications"})
 		return
 	}
 	defer rows.Close()
 
-	out := make([]Notification, 0)
+	var notis []map[string]interface{}
 	for rows.Next() {
-		var n Notification
-		if err := rows.Scan(&n.ID, &n.UserID, &n.Type, &n.Title, &n.Message, &n.IsRead, &n.Link, &n.CreatedAt); err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
+		var n struct {
+			ID        string    `json:"id"`
+			UserID    string    `json:"user_id"`
+			Type      string    `json:"type"`
+			Title     string    `json:"title"`
+			Message   string    `json:"message"`
+			IsRead    bool      `json:"is_read"`
+			Link      *string   `json:"link"`
+			CreatedAt time.Time `json:"created_at"`
 		}
-		out = append(out, n)
+		if err := rows.Scan(&n.ID, &n.UserID, &n.Type, &n.Title, &n.Message, &n.IsRead, &n.Link, &n.CreatedAt); err != nil {
+			continue
+		}
+		notis = append(notis, map[string]interface{}{
+			"id":         n.ID,
+			"user_id":    n.UserID,
+			"type":       n.Type,
+			"title":      n.Title,
+			"message":    n.Message,
+			"is_read":    n.IsRead,
+			"link":       n.Link,
+			"created_at": n.CreatedAt,
+		})
 	}
-	c.JSON(200, out)
+
+	if notis == nil {
+		notis = []map[string]interface{}{}
+	}
+
+	c.JSON(200, notis)
 }
 
 func markNotificationRead(c *gin.Context, pool *pgxpool.Pool) {
-	userID := c.GetString("userID")
 	id := c.Param("id")
+	userID := c.MustGet("userID").(string)
 
-	ct, err := pool.Exec(c, `
-		UPDATE notifications
-		SET is_read = TRUE
+	_, err := pool.Exec(context.Background(), `
+		UPDATE notifications SET is_read = TRUE
 		WHERE id = $1 AND user_id = $2
 	`, id, userID)
 
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-
-	if ct.RowsAffected() == 0 {
-		c.JSON(404, gin.H{"error": "notification not found"})
+		c.JSON(500, gin.H{"error": "failed to mark notification as read"})
 		return
 	}
 
@@ -94,11 +110,28 @@ func markAllNotificationsRead(c *gin.Context, pool *pgxpool.Pool) {
 	c.Status(204)
 }
 
+func deleteNotification(c *gin.Context, pool *pgxpool.Pool) {
+	id := c.Param("id")
+	userID := c.MustGet("userID").(string)
+
+	_, err := pool.Exec(context.Background(), `
+		DELETE FROM notifications
+		WHERE id = $1 AND user_id = $2
+	`, id, userID)
+
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to delete notification"})
+		return
+	}
+
+	c.Status(204)
+}
+
 // Helper to create notification (internal use)
-func createNotification(ctx context.Context, pool *pgxpool.Pool, userID, nType, title, message string, link *string) error {
-	_, err := pool.Exec(ctx, `
-		INSERT INTO notifications (user_id, type, title, message, link)
-		VALUES ($1, $2, $3, $4, $5)
-	`, userID, nType, title, message, link)
+func createNotification(ctx context.Context, db *pgxpool.Pool, userID, type_, title, message string, link *string) error {
+	_, err := db.Exec(ctx, `
+		INSERT INTO notifications (user_id, type, title, message, link, is_read)
+		VALUES ($1, $2, $3, $4, $5, FALSE)
+	`, userID, type_, title, message, link)
 	return err
 }
