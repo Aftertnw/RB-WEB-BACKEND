@@ -23,6 +23,7 @@ func registerNotificationRoutes(api *gin.RouterGroup, pool *pgxpool.Pool) {
 	// All routes here should be protected by AuthMiddleware (handled in router.go)
 	api.GET("/notifications", func(c *gin.Context) { listNotifications(c, pool) })
 	api.PATCH("/notifications/:id/read", func(c *gin.Context) { markNotificationRead(c, pool) })
+	api.DELETE("/notifications/:id", func(c *gin.Context) { deleteNotification(c, pool) })
 	api.POST("/notifications/read-all", func(c *gin.Context) { markAllNotificationsRead(c, pool) })
 }
 
