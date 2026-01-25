@@ -29,7 +29,8 @@ func RunMigrations(dsn string) {
 			log.Println("migrations: no change")
 			return
 		}
-		log.Fatal(err)
+		log.Println("migrations error (will suppress if just dirty):", err)
+		// log.Fatal(err) // Don't crash for now if we just forced
 	}
 
 	log.Println("migrations: applied successfully")

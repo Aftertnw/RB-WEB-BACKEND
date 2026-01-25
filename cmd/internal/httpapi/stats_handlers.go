@@ -18,6 +18,11 @@ type CourtStat struct {
 	Count int    `json:"count"`
 }
 
+type ContributorStat struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
 type DashboardStats struct {
 	TotalJudgments int64  `json:"total_judgments"`
 	TotalUsers     *int64 `json:"total_users,omitempty"`
@@ -26,8 +31,9 @@ type DashboardStats struct {
 
 	PendingJudgments *int64 `json:"pending_judgments,omitempty"`
 
-	YearlyStats []YearlyStat `json:"yearly_stats"`
-	CourtStats  []CourtStat  `json:"court_stats"`
+	YearlyStats      []YearlyStat      `json:"yearly_stats"`
+	ContributorStats []ContributorStat `json:"contributor_stats,omitempty"`
+	CourtStats       []CourtStat       `json:"court_stats,omitempty"`
 }
 
 func registerStatsRoutes(api *gin.RouterGroup, pool *pgxpool.Pool) {
@@ -40,7 +46,6 @@ func getDashboardStats(c *gin.Context, pool *pgxpool.Pool) {
 
 	stats := DashboardStats{
 		YearlyStats: []YearlyStat{}, // Ensure non-null for JSON
-		CourtStats:  []CourtStat{},
 	}
 
 	// Helper to build queries
@@ -80,7 +85,6 @@ func getDashboardStats(c *gin.Context, pool *pgxpool.Pool) {
 	`
 	rows, err := pool.Query(c, trendQ, args...)
 	if err == nil {
-		defer rows.Close()
 		for rows.Next() {
 			var y string
 			var count int
@@ -90,6 +94,7 @@ func getDashboardStats(c *gin.Context, pool *pgxpool.Pool) {
 				}
 			}
 		}
+		rows.Close() // Explicit close to free connection
 	}
 
 	// Convert map to sorted slice
@@ -100,22 +105,61 @@ func getDashboardStats(c *gin.Context, pool *pgxpool.Pool) {
 		})
 	}
 
-	// 3. Offenders (Parties) Distribution
-	// Using 'parties' column, grouped by exact string match
-	partiesQ := `
-		SELECT COALESCE(parties, 'Unknown'), COUNT(*)
-		FROM judgments
-		WHERE 1=1 ` + filterClause + `
-		GROUP BY parties ORDER BY count DESC LIMIT 5
-	`
-	rows2, err := pool.Query(c, partiesQ, args...)
-	if err == nil {
-		defer rows2.Close()
-		for rows2.Next() {
-			var s CourtStat // Reusing CourtStat struct for simplicity/compatibility
-			if err := rows2.Scan(&s.Court, &s.Count); err == nil {
-				stats.CourtStats = append(stats.CourtStats, s)
+	// 3. Conditional Stats
+	if role == "admin" || role == "owner" {
+		// Admin: Top 5 Contributors (Current Year)
+		stats.ContributorStats = []ContributorStat{}
+
+		contribArgs := make([]any, 0)
+		// For admins, no base filterClause on created_by, so we query all.
+		// Filter by current year judgment_date (as decided previously).
+
+		contribQ := `
+			SELECT u.name, COUNT(j.id)
+			FROM judgments j
+			JOIN users u ON j.created_by = u.id
+			WHERE to_char(j.judgment_date, 'YYYY') = $1
+			GROUP BY u.name
+			ORDER BY count DESC
+			LIMIT 5
+		`
+		contribArgs = append(contribArgs, strconv.Itoa(currentYear))
+
+		rows2, err := pool.Query(c, contribQ, contribArgs...)
+		if err == nil {
+			defer rows2.Close()
+			for rows2.Next() {
+				var s ContributorStat
+				if err := rows2.Scan(&s.Name, &s.Count); err == nil {
+					stats.ContributorStats = append(stats.ContributorStats, s)
+				}
 			}
+		}
+	} else {
+		// User: Top Offenders (Parties) - based on their judgments
+		stats.CourtStats = []CourtStat{}
+
+		// Handle empty string as Unknown, Alias count
+		// Use explicit aliases to avoid AMBIGUOUS column reference in ORDER BY
+		partiesQ := `
+			SELECT COALESCE(NULLIF(parties, ''), 'Unknown') as party, COUNT(*) as cnt
+			FROM judgments
+			WHERE 1=1 ` + filterClause + `
+			GROUP BY party ORDER BY cnt DESC LIMIT 5
+		`
+		// reuse 'args' which already has userID if needed
+		rows2, err := pool.Query(c, partiesQ, args...)
+		if err == nil {
+			defer rows2.Close()
+			for rows2.Next() {
+				var s CourtStat
+				if err := rows2.Scan(&s.Court, &s.Count); err == nil {
+					stats.CourtStats = append(stats.CourtStats, s)
+				}
+			}
+		} else {
+			// Log error for debugging if needed (or just ignore as per pattern)
+			// c.Error(err)
 		}
 	}
 

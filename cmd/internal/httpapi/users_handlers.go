@@ -156,17 +156,19 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 	selfRole := c.GetString("userRole")
 
 	// Check protection:
+	var targetRole string
+	var targetEmail string
+	var targetName string
+	// Fetch target info first
+	err := pool.QueryRow(c, "SELECT role, email, name FROM users WHERE id=$1", id).Scan(&targetRole, &targetEmail, &targetName)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "user not found"})
+		return
+	}
+
 	// 1. Admin cannot edit Owner.
 	// 2. Admin cannot edit other Admins.
 	if selfRole != "owner" {
-		var targetRole string
-		var targetEmail string
-		err := pool.QueryRow(c, "SELECT role, email FROM users WHERE id=$1", id).Scan(&targetRole, &targetEmail)
-		if err != nil {
-			c.JSON(404, gin.H{"error": "user not found"})
-			return
-		}
-
 		// ✅ Protection: Super Owner (thanawuth.rod@gmail.com) cannot be edited by anyone else
 		if targetEmail == "thanawuth.rod@gmail.com" && id != selfID {
 			c.JSON(403, gin.H{"error": "permission denied: cannot edit super owner"})
@@ -187,6 +189,7 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 	setParts := []string{}
 	args := []any{}
 	argN := 1
+	var changes []string // Track changes for notification
 
 	// ✅ email
 	if in.Email != nil {
@@ -198,6 +201,9 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 		setParts = append(setParts, "email=$"+itoa(argN))
 		args = append(args, email)
 		argN++
+		if email != targetEmail {
+			changes = append(changes, "Email changed to '"+email+"'")
+		}
 	}
 
 	// ✅ name
@@ -210,6 +216,9 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 		setParts = append(setParts, "name=$"+itoa(argN))
 		args = append(args, name)
 		argN++
+		if name != targetName {
+			changes = append(changes, "Name changed to '"+name+"'")
+		}
 	}
 
 	// ✅ role
@@ -226,6 +235,9 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 		setParts = append(setParts, "role=$"+itoa(argN))
 		args = append(args, role)
 		argN++
+		if role != targetRole {
+			changes = append(changes, "Role changed to '"+role+"'")
+		}
 	}
 
 	// ✅ password reset
@@ -242,6 +254,7 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 		setParts = append(setParts, "password_hash=$"+itoa(argN))
 		args = append(args, string(hashed))
 		argN++
+		changes = append(changes, "Password was reset")
 	}
 
 	// ✅ is_approved
@@ -250,7 +263,7 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 		args = append(args, *in.IsApproved)
 		argN++
 
-		// Notify if approved
+		// Notify if approved (Distinct from edit profile notification)
 		if *in.IsApproved {
 			go func() {
 				// We need to fetch ID if not known? We have ID in params.
@@ -280,6 +293,14 @@ func adminUpdateUser(c *gin.Context, pool *pgxpool.Pool) {
 	if ct.RowsAffected() == 0 {
 		c.JSON(404, gin.H{"error": "user not found"})
 		return
+	}
+
+	// NOTIFY USER OF CHANGES
+	if len(changes) > 0 && id != selfID {
+		go func() {
+			msg := "High-Ranking Officials updated your profile: " + strings.Join(changes, ", ")
+			createNotification(context.Background(), pool, id, "info", "Profile Updated", msg, nil)
+		}()
 	}
 
 	c.Status(204)
